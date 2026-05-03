@@ -8,6 +8,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk, ImageOps, ImageEnhance
 
+# vibe coded with mistral web chat
+
 APP_TITLE = "Perspective Tool"
 __version__ = 1
 HSEPARATOR_WIDTH = 4
