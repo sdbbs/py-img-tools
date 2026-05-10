@@ -25,6 +25,9 @@ APPLICATION WORKFLOW:
      - Mouse over a corner to highlight it (yellow, or green if Shift is held).
      - Use arrow keys to nudge the selected corner by 1 pixel.
   3. RIGHT VIEWER: Shows a live preview of the perspective-corrected image (no filter).
+     - Ctrl+H: Add horizontal guide at mouse cursor y position.
+     - Ctrl+V: Add vertical guide at mouse cursor x position.
+     - Ctrl+X: Delete hovered guide line.
   4. CURVES EDITOR: Press 'e' to open a graphical Curves editor (like GIMP).
   5. EXECUTE: Press ENTER to save the corrected image.
      - A dialog suggests a filename like '[original]_fix01.[ext]' (auto-increments if exists).
@@ -54,6 +57,7 @@ def parse_args():
     parser.add_argument("image_file", nargs="?", default=None, help="Input image file")
     parser.add_argument("--settings", type=str, default=None, help="Settings string to apply on startup")
     return parser.parse_args()
+
 
 class CurvesEditor:
     def __init__(self, parent, curves_settings, apply_callback):
@@ -88,6 +92,7 @@ class CurvesEditor:
         self.apply_callback(self.curves_settings)
         self.root.destroy()
 
+
 class PerspectiveTool:
     def __init__(self, root, args):
         self.root = root
@@ -105,6 +110,8 @@ class PerspectiveTool:
         self.shift_active = False
         self.ctrl_active = False
         self.hover_handle = None
+        self.guides = []
+        self.hovered_guide = None
 
         self.viewers = {
             "left": {"scale": 1.0, "offset_x": 0, "offset_y": 0, "canvas": None, "img": None, "tk_img": None},
@@ -132,6 +139,10 @@ class PerspectiveTool:
         self.root.bind("o", self.load_image_dialog)
         self.root.bind("q", lambda e: self.root.destroy())
         self.root.bind("<Motion>", self.on_mouse_move)
+        
+        self.root.bind("<Control-h>", self.add_horizontal_guide)
+        self.root.bind("<Control-v>", self.add_vertical_guide)
+        self.root.bind("<Control-x>", self.delete_hovered_guide)
 
         if not self.load_image(self.source_file):
             self.root.destroy()
@@ -182,10 +193,60 @@ class PerspectiveTool:
         self.viewers["right"]["canvas"].bind("<B1-Motion>", lambda e: self.on_drag("right", e))
 
     def on_mouse_move(self, event):
+        if event.widget == self.viewers["right"]["canvas"]:
+            new_hovered_guide = self.get_hovered_guide(event.x, event.y)
+            if new_hovered_guide != self.hovered_guide:
+                self.hovered_guide = new_hovered_guide
+                self.redraw("right")
+        
         new_hover = self.get_handle_at("left", event.x, event.y)
         if new_hover != self.hover_handle:
             self.hover_handle = new_hover
             self.redraw("left")
+
+    def get_hovered_guide(self, x, y):
+        scale = self.viewers["right"]["scale"]
+        offset_x = self.viewers["right"]["offset_x"]
+        offset_y = self.viewers["right"]["offset_y"]
+        
+        for i, (pos, orientation) in enumerate(self.guides):
+            if orientation == "horizontal":
+                guide_y = pos * scale + offset_y
+                if abs(guide_y - y) < 5:
+                    return i
+            elif orientation == "vertical":
+                guide_x = pos * scale + offset_x
+                if abs(guide_x - x) < 5:
+                    return i
+        return None
+
+    def add_horizontal_guide(self, event=None):
+        canvas = self.viewers["right"]["canvas"]
+        mouse_x = canvas.winfo_pointerx() - canvas.winfo_rootx()
+        mouse_y = canvas.winfo_pointery() - canvas.winfo_rooty()
+        
+        scale = self.viewers["right"]["scale"]
+        offset_y = self.viewers["right"]["offset_y"]
+        img_y = (mouse_y - offset_y) / scale
+        self.guides.append((img_y, "horizontal"))
+        self.redraw("right")
+
+    def add_vertical_guide(self, event=None):
+        canvas = self.viewers["right"]["canvas"]
+        mouse_x = canvas.winfo_pointerx() - canvas.winfo_rootx()
+        mouse_y = canvas.winfo_pointery() - canvas.winfo_rooty()
+        
+        scale = self.viewers["right"]["scale"]
+        offset_x = self.viewers["right"]["offset_x"]
+        img_x = (mouse_x - offset_x) / scale
+        self.guides.append((img_x, "vertical"))
+        self.redraw("right")
+
+    def delete_hovered_guide(self, event=None):
+        if self.hovered_guide is not None:
+            self.guides.pop(self.hovered_guide)
+            self.hovered_guide = None
+            self.redraw("right")
 
     def load_image(self, file_path=None):
         if file_path is None:
@@ -405,6 +466,17 @@ class PerspectiveTool:
                 y2 = self.perspective_box[idx2 + 1] * scale + offset_y
                 canvas.create_line(x1, y1, x2, y2, fill="red", width=2)
 
+        if viewer == "right":
+            for i, (pos, orientation) in enumerate(self.guides):
+                if orientation == "horizontal":
+                    guide_y = pos * scale + offset_y
+                    color = "cyan" if self.hovered_guide == i else "red"
+                    canvas.create_line(0, guide_y, cw, guide_y, fill=color, dash=(5, 5), width=1)
+                elif orientation == "vertical":
+                    guide_x = pos * scale + offset_x
+                    color = "cyan" if self.hovered_guide == i else "red"
+                    canvas.create_line(guide_x, 0, guide_x, ch, fill=color, dash=(5, 5), width=1)
+
     def open_curves_editor(self, event=None):
         CurvesEditor(self.root, self.curves_settings, self.update_curves_from_editor)
 
@@ -506,11 +578,13 @@ class PerspectiveTool:
         h_win.bind("<Escape>", lambda e: h_win.destroy())
         h_win.bind("q", lambda e: h_win.destroy())
 
+
 def main():
     args = parse_args()
     root = tk.Tk()
     app = PerspectiveTool(root, args)
     root.mainloop()
+
 
 if __name__ == "__main__":
     main()
