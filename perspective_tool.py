@@ -2,8 +2,10 @@
 
 import os
 import sys
+import datetime
 import argparse
 import subprocess
+import platform
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk, ImageOps, ImageEnhance
@@ -36,10 +38,11 @@ APPLICATION WORKFLOW:
 
 CONTROLS:
   Left-Click Drag       : Pan image (in either viewer) or drag corner (left viewer, Shift+Click)
-  Ctrl + Left-Click Drag: Sync pan to both viewers (absolute)
+  Ctrl + Left-Click Drag: Sync pan to both viewers (relative)
   Ctrl + Mouse Wheel    : Sync zoom to both viewers (absolute)
   Mouse Wheel           : Zoom in/out (in either viewer)
   Arrow Keys            : Nudge selected corner by 1 pixel
+  h                     : Show this help
   r                     : Reset zoom/pan for the last selected viewer
   e                     : Open Curves editor dialog
   c                     : Copy Curves + Perspective settings to clipboard
@@ -57,6 +60,47 @@ def parse_args():
     parser.add_argument("image_file", nargs="?", default=None, help="Input image file")
     parser.add_argument("--settings", type=str, default=None, help="Settings string to apply on startup")
     return parser.parse_args()
+
+
+def copy_to_clipboard(text):
+    system = platform.system()
+    if system == "Windows":
+        # 'clip' is built into Windows
+        subprocess.run(['clip'], input=text.encode('utf-16'), check=True)
+    elif system == "Darwin":  # macOS
+        # 'pbcopy' is built into macOS
+        subprocess.run(['pbcopy'], input=text.encode('utf-8'), check=True)
+    elif system == "Linux":
+        # Linux is the outlier: it usually requires xclip or xsel installed
+        try:
+            subprocess.run(['xclip', '-selection', 'clipboard'], input=text.encode('utf-8'), check=True)
+        except FileNotFoundError:
+            print("Error: Linux requires 'xclip' to be installed (sudo apt install xclip).")
+
+def paste_from_clipboard():
+    system = platform.system()
+    if system == "Windows":
+        # Windows 'clip' can't read, so we use PowerShell's Get-Clipboard
+        return subprocess.check_output(['powershell', '-Command', 'Get-Clipboard'], encoding='utf-16').strip()
+    elif system == "Darwin":  # macOS
+        return subprocess.check_output(['pbpaste'], encoding='utf-8')
+    elif system == "Linux":
+        try:
+            return subprocess.check_output(['xclip', '-selection', 'clipboard', '-o'], encoding='utf-8')
+        except FileNotFoundError:
+            print("Error: Linux requires 'xclip' to be installed (sudo apt install xclip).")
+    return ""
+
+
+def print_ts(*args, **kwargs):
+    # Generate the timestamp prefix
+    ts = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+    # Prepend the timestamp to the first argument
+    if args:
+        args = (f"{ts}: {args[0]}",) + args[1:]
+    else:
+        args = (f"{ts}: ",)
+    print(*args, **kwargs)
 
 
 class CurvesEditor:
@@ -90,7 +134,7 @@ class CurvesEditor:
 
     def apply(self):
         self.apply_callback(self.curves_settings)
-        self.root.destroy()
+        #self.root.destroy() # do NOT close this window/dialog after applying the settings!
 
 
 class PerspectiveTool:
@@ -131,6 +175,7 @@ class PerspectiveTool:
         self.root.bind("<Right>", self.nudge_corner)
         self.root.bind("<Up>", self.nudge_corner)
         self.root.bind("<Down>", self.nudge_corner)
+        self.root.bind("h", self.show_help)
         self.root.bind("r", self.reset_viewer)
         self.root.bind("e", self.open_curves_editor)
         self.root.bind("c", self.copy_settings)
@@ -139,7 +184,7 @@ class PerspectiveTool:
         self.root.bind("o", self.load_image_dialog)
         self.root.bind("q", lambda e: self.root.destroy())
         self.root.bind("<Motion>", self.on_mouse_move)
-        
+
         self.root.bind("<Control-h>", self.add_horizontal_guide)
         self.root.bind("<Control-v>", self.add_vertical_guide)
         self.root.bind("<Control-x>", self.delete_hovered_guide)
@@ -198,7 +243,7 @@ class PerspectiveTool:
             if new_hovered_guide != self.hovered_guide:
                 self.hovered_guide = new_hovered_guide
                 self.redraw("right")
-        
+
         new_hover = self.get_handle_at("left", event.x, event.y)
         if new_hover != self.hover_handle:
             self.hover_handle = new_hover
@@ -208,7 +253,7 @@ class PerspectiveTool:
         scale = self.viewers["right"]["scale"]
         offset_x = self.viewers["right"]["offset_x"]
         offset_y = self.viewers["right"]["offset_y"]
-        
+
         for i, (pos, orientation) in enumerate(self.guides):
             if orientation == "horizontal":
                 guide_y = pos * scale + offset_y
@@ -224,29 +269,32 @@ class PerspectiveTool:
         canvas = self.viewers["right"]["canvas"]
         mouse_x = canvas.winfo_pointerx() - canvas.winfo_rootx()
         mouse_y = canvas.winfo_pointery() - canvas.winfo_rooty()
-        
+
         scale = self.viewers["right"]["scale"]
         offset_y = self.viewers["right"]["offset_y"]
         img_y = (mouse_y - offset_y) / scale
         self.guides.append((img_y, "horizontal"))
         self.redraw("right")
+        print_ts(f"add_horizontal_guide: {self.guides} {self.settings_string}")
 
     def add_vertical_guide(self, event=None):
         canvas = self.viewers["right"]["canvas"]
         mouse_x = canvas.winfo_pointerx() - canvas.winfo_rootx()
         mouse_y = canvas.winfo_pointery() - canvas.winfo_rooty()
-        
+
         scale = self.viewers["right"]["scale"]
         offset_x = self.viewers["right"]["offset_x"]
         img_x = (mouse_x - offset_x) / scale
         self.guides.append((img_x, "vertical"))
         self.redraw("right")
+        print_ts(f"add_vertical_guide: {self.guides} {self.settings_string}")
 
     def delete_hovered_guide(self, event=None):
         if self.hovered_guide is not None:
             self.guides.pop(self.hovered_guide)
             self.hovered_guide = None
             self.redraw("right")
+            print_ts(f"delete_hovered_guide: {self.guides} {self.settings_string}")
 
     def load_image(self, file_path=None):
         if file_path is None:
@@ -263,9 +311,12 @@ class PerspectiveTool:
             self.update_preview()
             self.redraw("left")
             self.redraw("right")
+            print_ts(f"load_image: {self.source_file}")
             return True
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load image: {e}")
+            err_str = f"Failed to load image: {e}"
+            print_ts(f"load_image Error: {err_str}")
+            messagebox.showerror("Error", err_str)
             return False
 
     def load_image_dialog(self, event=None):
@@ -282,13 +333,17 @@ class PerspectiveTool:
     def apply_curves(self):
         img = self.orig_img.copy()
         if "contrast" in self.curves_settings:
-            img = ImageOps.autocontrast(img)
+            #img = ImageOps.autocontrast(img)
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(self.curves_settings["contrast"])
         if "brightness" in self.curves_settings:
             enhancer = ImageEnhance.Brightness(img)
             img = enhancer.enhance(1.0 + self.curves_settings["brightness"] / 100.0)
         self.viewers["left"]["img"] = img
         self.redraw("left")
         self.update_preview()
+        self.refresh_settings_string() # NOTE: somehow this here causes "Failed to load image: {e}" with NoneType?
+        print_ts(f"apply_curves: {self.settings_string}")
 
     def get_handle_at(self, viewer, x, y):
         if viewer != "left" or not self.perspective_box:
@@ -331,6 +386,8 @@ class PerspectiveTool:
             self.perspective_box[idx + 1] = cur_y
             self.update_preview()
             self.redraw(viewer)
+            self.refresh_settings_string()
+            print_ts(f"drag perspective_box handle: {self.settings_string}")
         elif self.viewers[viewer].get("active_handle") == "pan":
             dx = event.x - self.viewers[viewer]["last_mouse_x"]
             dy = event.y - self.viewers[viewer]["last_mouse_y"]
@@ -345,6 +402,8 @@ class PerspectiveTool:
                 self.viewers[viewer]["offset_y"] += dy
             self.redraw("left")
             self.redraw("right")
+            self.refresh_settings_string()
+            print_ts(f"pan: {self.settings_string}")
 
     def zoom(self, viewer, event):
         self.last_selected_viewer = viewer
@@ -363,6 +422,9 @@ class PerspectiveTool:
             self.viewers[viewer]["scale"] *= factor
         self.redraw("left")
         self.redraw("right")
+        self.refresh_settings_string()
+        print_ts(f"zoom: {self.settings_string}")
+
 
     def reset_viewer(self, event=None):
         if self.last_selected_viewer:
@@ -372,6 +434,7 @@ class PerspectiveTool:
             self.redraw(self.last_selected_viewer)
 
     def nudge_corner(self, event):
+        print_ts(f"nudge_corner: {self.selected_corner=} {self.last_selected_viewer=}")
         if self.selected_corner is None or self.last_selected_viewer != "left":
             return
         dx, dy = 0, 0
@@ -388,6 +451,8 @@ class PerspectiveTool:
         self.perspective_box[idx + 1] += dy
         self.update_preview()
         self.redraw("left")
+        self.refresh_settings_string()
+        print_ts(f"nudge_corner: {self.settings_string}")
 
     def update_preview(self):
         if not self.perspective_box:
@@ -523,24 +588,33 @@ class PerspectiveTool:
                     f'{self.img_w},{self.img_h} {x3},{y3} 0,{self.img_h} {x4},{y4}" '
                     f'"{save_path}"'
                 )
-                print(f"Saved: {save_path}")
-                print(f"ImageMagick command: {magick_cmd}")
+                print_ts(f"Saved: {save_path}")
+                print_ts(f"ImageMagick command: {magick_cmd}")
                 self.root.destroy()
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save image: {e}")
 
-    def copy_settings(self, event=None):
-        curves_str = ",".join(f"{k}:{v}" for k, v in self.curves_settings.items())
-        perspective_str = ",".join(map(str, self.perspective_box))
-        settings_str = f"curves:{curves_str};perspective:{perspective_str}"
+    def refresh_settings_string(self, event=None):
+        # NOTE: perspective_box may be None when this is called at first;
+        try:
+            curves_str = ",".join(f"{k}:{v}" for k, v in self.curves_settings.items())
+            perspective_str = ",".join(map(str, self.perspective_box))
+            settings_str = f"curves:{curves_str};perspective:{perspective_str}"
+        except Exception as ex:
+            settings_str = None
         self.settings_string = settings_str
-        print(f"Copied settings: {settings_str}")
+
+    def copy_settings(self, event=None):
+        self.refresh_settings_string()
+        copy_to_clipboard(self.settings_string)
+        print_ts(f"Copied settings to clipboard: {self.settings_string}")
 
     def paste_settings(self, event=None):
+        self.settings_string = paste_from_clipboard()
         if not self.settings_string:
             return
         self.apply_settings_string(self.settings_string)
-        print(f"Pasted settings: {self.settings_string}")
+        print_ts(f"Pasted settings: {self.settings_string}")
 
     def apply_settings_string(self, settings_str):
         try:
